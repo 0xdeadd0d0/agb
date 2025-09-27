@@ -352,6 +352,8 @@ pub mod display;
 pub mod dma;
 /// Button inputs to the system.
 pub mod input;
+/// Serial link multi-player
+pub mod serial;
 /// Interacting with the GBA interrupts.
 pub mod interrupt;
 mod memory_mapped;
@@ -479,6 +481,7 @@ pub struct Gba {
     pub save: save::SaveManager,
     /// Manages access to the Game Boy Advance's 4 timers.
     pub timers: timer::TimerController,
+    pub serial: serial::SerialController,
 }
 
 impl Gba {
@@ -502,6 +505,7 @@ impl Gba {
             mixer: sound::mixer::MixerController::new(),
             save: save::SaveManager::new(),
             timers: timer::TimerController::new(),
+            serial: serial::SerialController::new(),
         }
     }
 }
