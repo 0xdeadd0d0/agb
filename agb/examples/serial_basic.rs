@@ -13,6 +13,8 @@ use agb::{
     include_aseprite, include_background_gfx,
     input::ButtonController,
     serial::SerialBaudRate,
+    serial::SerialResponse,
+    input::Button,
 };
 
 include_aseprite!(mod sprites, "examples/gfx/crab.aseprite");
@@ -56,6 +58,7 @@ fn main(mut gba: agb::Gba) -> ! {
     let mut player = Player::new(vec2(num!(100.), num!(100.)));
     let mut button_controller = ButtonController::new();
     let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate0);
+    let mut rsp;
 
     agb::println!("{serial_multi_player}");
     serial_multi_player.activate();
@@ -68,9 +71,15 @@ fn main(mut gba: agb::Gba) -> ! {
     bg_tiles.fill_with(&background::BEACH);
 
     loop {
-        agb::println!("{serial_multi_player}");
+        //agb::println!("{serial_multi_player}");
         button_controller.update();
-
+        if button_controller.is_pressed(Button::UP)
+        {
+            agb::println!("{serial_multi_player}");
+            rsp = serial_multi_player.transmit_data(0xD0D0);
+            agb::println!("{serial_multi_player}");
+            agb::println!("rsp: {0}", rsp.sio_player_id);
+        }
         // Update all entities in the game. In this case it is just the player, but in
         // larger games there could be more things to update.
         player.update(&button_controller);

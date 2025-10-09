@@ -16,6 +16,7 @@ const SERIAL_RCNT_BIT_MULTIPLAYER: u16 = 13;
 const SERIAL_RCNT_BIT_IRQ: u16 = 14;
 const SERIAL_RCNT_BIT_GENERAL_PURPOSE_LOW: u16 = 14;
 const SERIAL_RCNT_BIT_GENERAL_PURPOSE_HIGH: u16 = 15;
+const SIO_MULTI_PLAY_EMPTY_DATA: u16 = 0xFFFF;
 
 #[repr(u16)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -90,12 +91,14 @@ union Serial {
     gpio_mode_reg: SerialGpio,
 }
 
-struct SerialResponse {
-    sio_data: [u16; 4],
-    sio_player_id: u32,
+#[derive(Debug, Clone, Copy)]
+pub struct SerialResponse {
+    pub sio_data: [u16; 4],
+    pub sio_player_id: u32,
 }
 
 const SIO_INVALID_PLAYER_ID: u32 = 0xDEADBEEF;
+
 
 impl Serial {
     fn new() -> &'static mut Serial {
@@ -111,7 +114,7 @@ impl Serial {
         }
     }
 
-    fn set_general_purpose_mode(&mut self) {
+    fn set_gpio_mode(&mut self) {
         unsafe {
             *addr_of_mut!(self.multiplay_mode_reg.sio_cnt) = (1
                 << SERIAL_RCNT_BIT_GENERAL_PURPOSE_LOW)
@@ -120,24 +123,50 @@ impl Serial {
         }
     }
 
+    #[inline(always)]
     fn set_data(&mut self, data: u16) {
         unsafe {
             *addr_of_mut!(self.multiplay_mode_reg.sio_multi_data_send) = data;
         }
     }
 
-    fn get_data<'a>(&self, rsp: &'a mut SerialResponse) -> &'a SerialResponse {
+    fn is_sending(&self) -> bool {
         unsafe {
-            rsp.sio_player_id = SIO_INVALID_PLAYER_ID;
-            rsp.sio_data[0] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_0);
-            rsp.sio_data[1] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_1);
-            rsp.sio_data[2] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_2);
-            rsp.sio_data[3] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_3);
-            rsp.sio_player_id = *addr_of!(self.multiplay_mode_reg.sio_cnt) as u32
-                & SERIAL_RCNT_BITS_PLAYER_ID as u32 >> SERIAL_RCNT_BITS_PLAYER_ID as u32;
+            (*addr_of!(self.multiplay_mode_reg.sio_cnt)
+                & SERIAL_RCNT_BIT_START >> SERIAL_RCNT_BIT_START) == 1
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        unsafe {
+            (*addr_of!(self.multiplay_mode_reg.sio_cnt)
+                & SERIAL_RCNT_BIT_BIT_READY >> SERIAL_RCNT_BIT_BIT_READY) == 1
+        }
+    }
+
+    fn is_error(&self) -> bool {
+        unsafe {
+            (*addr_of!(self.multiplay_mode_reg.sio_cnt)
+            & SERIAL_RCNT_BIT_ERROR >> SERIAL_RCNT_BIT_ERROR) == 1
+        }
+    }
+
+    fn get_data<'a>(&self, rsp: &'a mut SerialResponse) -> &'a SerialResponse {
+        rsp.sio_player_id = SIO_INVALID_PLAYER_ID;
+        if !self.is_error()
+        {
+            unsafe {
+                rsp.sio_data[0] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_0);
+                rsp.sio_data[1] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_1);
+                rsp.sio_data[2] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_2);
+                rsp.sio_data[3] = *addr_of!(self.multiplay_mode_reg.sio_multi_data_3);
+                rsp.sio_player_id = *addr_of!(self.multiplay_mode_reg.sio_cnt) as u32
+                    & SERIAL_RCNT_BITS_PLAYER_ID as u32 >> SERIAL_RCNT_BITS_PLAYER_ID as u32;
+            }
         }
         rsp
     }
+
     #[inline(always)]
     fn start_transfer(&mut self) {
         unsafe {
@@ -198,6 +227,31 @@ impl<'gba> SerialMultiPlayer<'gba> {
         self.serial.set_multi_player_mode(self.baudrate);
         self.is_enabled = true;
     }
+
+    pub fn deactivate(&mut self) {
+        self.serial.set_gpio_mode();
+        self.is_enabled = false;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.is_enabled
+    }
+
+    pub fn transmit_data(&mut self, data: u16) -> SerialResponse {
+        let mut response: SerialResponse = SerialResponse {
+            sio_data: [SIO_MULTI_PLAY_EMPTY_DATA;4],
+            sio_player_id: SIO_INVALID_PLAYER_ID,
+        };
+        self.serial.set_data(data);
+        self.serial.start_transfer();
+        while self.serial.is_sending() {}
+        if self.serial.is_ready() && !self.serial.is_error()
+        {
+            self.serial.get_data(&mut response);
+        }
+        response
+    }
+
 }
 
 impl<'gba> core::fmt::Display for SerialMultiPlayer<'gba> {
@@ -206,8 +260,8 @@ impl<'gba> core::fmt::Display for SerialMultiPlayer<'gba> {
     }
 }
 
-/// Controls access to the mixer and the underlying hardware it uses. A zero sized type that
-/// ensures that mixer access is exclusive.
+/// Controls access to the serial and the underlying hardware it uses. A zero sized type that
+/// ensures that serial access is exclusive.
 #[non_exhaustive]
 pub struct SerialController {}
 
