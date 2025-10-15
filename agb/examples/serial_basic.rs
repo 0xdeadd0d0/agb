@@ -11,10 +11,10 @@ use agb::{
     },
     fixnum::{num, vec2, Num, Vector2D},
     include_aseprite, include_background_gfx,
+    input::Button,
     input::ButtonController,
     serial::SerialBaudRate,
     serial::SerialResponse,
-    input::Button,
 };
 
 include_aseprite!(mod sprites, "examples/gfx/crab.aseprite");
@@ -59,9 +59,9 @@ fn main(mut gba: agb::Gba) -> ! {
     let mut button_controller = ButtonController::new();
     let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate0);
     let mut rsp;
+    let mut data = 0xDEAD;
 
     agb::println!("{serial_multi_player}");
-    serial_multi_player.activate();
 
     let mut bg_tiles = RegularBackground::new(
         Priority::P0,
@@ -71,15 +71,23 @@ fn main(mut gba: agb::Gba) -> ! {
     bg_tiles.fill_with(&background::BEACH);
 
     loop {
-        //agb::println!("{serial_multi_player}");
         button_controller.update();
-        if button_controller.is_pressed(Button::UP)
-        {
-            agb::println!("{serial_multi_player}");
-            rsp = serial_multi_player.transmit_data(0xD0D0);
-            agb::println!("{serial_multi_player}");
-            agb::println!("rsp: {0}", rsp.sio_player_id);
+        if button_controller.is_pressed(Button::A) {
+            serial_multi_player.activate();
+        } else if button_controller.is_pressed(Button::B) {
+            serial_multi_player.deactivate();
+        } else if button_controller.is_pressed(Button::START) {
+            data = 0xD0D0;
+        } else if button_controller.is_pressed(Button::SELECT) {
+            data = 0xFAFA;
         }
+        if serial_multi_player.is_active() {
+            rsp = serial_multi_player.transmit_data(data);
+            if rsp.sio_player_id <= 3 {
+                agb::println!("rsp: {}", rsp.sio_player_id);
+            }
+        }
+        agb::println!("{serial_multi_player}");
         // Update all entities in the game. In this case it is just the player, but in
         // larger games there could be more things to update.
         player.update(&button_controller);
