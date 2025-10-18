@@ -82,7 +82,7 @@ fn main(mut gba: agb::Gba) -> ! {
             data = 0xFAFA;
         }
         if serial_multi_player.is_active() {
-            rsp = serial_multi_player.transmit_data(data);
+            rsp = serial_multi_player.transmit_data(data, false);
             if rsp.sio_player_id <= 3 {
                 agb::println!("rsp: {}", rsp.sio_player_id);
             }

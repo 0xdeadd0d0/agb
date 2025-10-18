@@ -1,6 +1,9 @@
 use core::marker::PhantomData;
 use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
+use critical_section::CriticalSection;
+use crate::interrupt::InterruptHandler;
+use agb::interrupt::{add_interrupt_handler, Interrupt};
 
 /// 4000134h - RCNT (R) - Mode Selection, in Normal/Multiplayer/UART modes (R/W)
 const SERIAL_RCNT: *mut u16 = (0x04000134) as *mut u16;
@@ -107,7 +110,8 @@ impl Serial {
 
     fn set_multi_player_mode(&mut self, baud_rate: SerialBaudRate) {
         unsafe {
-            SERIAL_RCNT.write_volatile(SERIAL_RCNT.read_volatile() & !(1 << SERIAL_RCNT_BIT_GPIO_H));
+            SERIAL_RCNT
+                .write_volatile(SERIAL_RCNT.read_volatile() & !(1 << SERIAL_RCNT_BIT_GPIO_H));
             *addr_of_mut!(self.multiplay_mode_reg.sio_cnt) =
                 (1 << SERIAL_CNT_BIT_MULTIPLAYER) | (baud_rate.discriminant());
             *addr_of_mut!(self.multiplay_mode_reg.sio_multi_data_send) = 0;
@@ -117,7 +121,9 @@ impl Serial {
     fn set_gpio_mode(&mut self) {
         unsafe {
             SERIAL_RCNT.write_volatile(
-                (SERIAL_RCNT.read_volatile() & !(1 << SERIAL_RCNT_BIT_GPIO_L)) | (1 << SERIAL_RCNT_BIT_GPIO_H));
+                (SERIAL_RCNT.read_volatile() & !(1 << SERIAL_RCNT_BIT_GPIO_L))
+                    | (1 << SERIAL_RCNT_BIT_GPIO_H),
+            );
         }
     }
 
@@ -149,7 +155,11 @@ impl Serial {
 
     #[inline(always)]
     fn is_sending(&self) -> bool {
-        unsafe { (addr_of!(self.multiplay_mode_reg.sio_cnt).read_volatile() & (1 << SERIAL_CNT_BIT_START)) != 0 }
+        unsafe {
+            (addr_of!(self.multiplay_mode_reg.sio_cnt).read_volatile()
+                & (1 << SERIAL_CNT_BIT_START))
+                != 0
+        }
     }
 
     #[inline(always)]
@@ -221,7 +231,9 @@ impl core::fmt::Display for Serial {
 //static CURRENT_SAVE_ACCESS: Lock<Option<&'static dyn RawSaveAccess>> = Lock::new(None);
 
 pub struct SerialMultiPlayer<'gba> {
+    _interrupt_handler: InterruptHandler,
     baudrate: SerialBaudRate,
+    response: SerialResponse,
     is_master: bool,
     is_enabled: bool,
     serial: &'gba mut Serial,
@@ -232,10 +244,19 @@ impl<'gba> SerialMultiPlayer<'gba> {
     fn new(baud_rate: SerialBaudRate) -> SerialMultiPlayer<'gba> {
         let serial = Serial::new();
         SerialMultiPlayer {
+            _interrupt_handler: unsafe {
+                     add_interrupt_handler(Interrupt::Serial, |_: CriticalSection| {
+                         agb::println!("Woah there! There's been a serial irq!\n");
+                     })
+                 },
             baudrate: baud_rate,
             is_master: false,
             phantom: PhantomData,
             is_enabled: false,
+            response: SerialResponse {
+                sio_data: [SIO_MULTI_PLAY_EMPTY_DATA; 4],
+                sio_player_id: SIO_INVALID_PLAYER_ID,
+            },
             serial,
         }
     }
@@ -255,24 +276,49 @@ impl<'gba> SerialMultiPlayer<'gba> {
         self.is_enabled
     }
 
-    pub fn transmit_data(&mut self, data: u16) -> SerialResponse {
-        let mut response: SerialResponse = SerialResponse {
+    pub fn transmit_data(&mut self, data: u16, blocking: bool) -> SerialResponse {
+        self.response = SerialResponse {
             sio_data: [SIO_MULTI_PLAY_EMPTY_DATA; 4],
             sio_player_id: SIO_INVALID_PLAYER_ID,
         };
 
         self.serial.set_data(data);
-        // no sync, only polling
-        self.serial.disable_interrupt();
-        // all ready, start transmission
-        self.serial.start_transmission();
-        // wait end of transmission
-        self.serial.wait_end_transmission();
-
-        if self.serial.is_ready() && !self.serial.is_error() {
-            self.serial.get_data(&mut response);
+        if blocking {
+            // test to trig the Irq handler
+            self.serial.enable_interrupt();
+        } else {
+            self.serial.enable_interrupt();
         }
-        response
+        if self.is_master {
+            self.serial.start_transmission();
+        }
+        if blocking {
+            if self.serial.is_ready() && !self.serial.is_error() {
+                self.serial.get_data(&mut self.response);
+            }
+            self.serial.set_data(SIO_MULTI_PLAY_EMPTY_DATA);
+        }
+        self.response
+    }
+
+    pub fn handle_serial_interrupt(&mut self) {
+        self.serial.disable_interrupt();
+        if self.serial.is_ready() && !self.serial.is_error() {
+            self.serial.get_data(&mut self.response);
+        }
+        self.serial.set_data(SIO_MULTI_PLAY_EMPTY_DATA);
+    }
+
+    pub fn is_online(&self, player_id: u32) -> bool {
+        self.response.sio_data[player_id as usize] == SIO_MULTI_PLAY_EMPTY_DATA
+    }
+
+    pub fn get_response(&mut self, player_id: u32) -> u16 {
+        self.response.sio_data[player_id as usize]
+    }
+
+    pub fn get_player_id(&self) -> u32 {
+        self.response.sio_player_id
     }
 }
 
