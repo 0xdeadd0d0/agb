@@ -72,16 +72,15 @@ fn main(mut gba: agb::Gba) -> ! {
     loop {
         button_controller.update();
         serial_multi_player.sync();
-        if !blocking {
-            if serial_multi_player.is_active() {
-                rsp = serial_multi_player.get_response();
-                if rsp.sio_player_id <= 3 {
-                    agb::println!(
-                        "blocking rsp: {}, p1:{}, p2:{}",
-                        rsp.sio_player_id,
-                        rsp.sio_data[0],
-                        rsp.sio_data[1]
-                    );
+
+        if serial_multi_player.is_active() {
+            let player_id = serial_multi_player.get_player_id();
+            for i in 0..serial_multi_player.get_nb_players_online() {
+                if i != player_id {
+                    let rsp = serial_multi_player.get_player_rsp(i).unwrap_or(0x0);
+                    if rsp != 0 {
+                        agb::println!("\n======\nyou are player{}\nplayer{} sent: {}\n======\n", player_id, i, rsp);
+                    }
                 }
             }
         }
@@ -91,30 +90,8 @@ fn main(mut gba: agb::Gba) -> ! {
             serial_multi_player.deactivate();
         } else if button_controller.is_pressed(Button::START) {
             data = 0xD0D0;
-        } else if button_controller.is_pressed(Button::SELECT) {
-            data = 0xFAFA;
-        } else if button_controller.is_pressed(Button::L) {
-            blocking = !blocking;
         }
-        if blocking {
-            if serial_multi_player.is_active() {
-                rsp = serial_multi_player.transmit_data(data, blocking);
-                if rsp.sio_player_id <= 3 {
-                    if rsp.sio_player_id <= 3 {
-                        agb::println!(
-                            "not blocking rsp: {}, p1:{}, p2:{}",
-                            rsp.sio_player_id,
-                            rsp.sio_data[0],
-                            rsp.sio_data[1]
-                        );
-                    }
-                }
-            }
-        } else {
-            if serial_multi_player.is_active() {
-                rsp = serial_multi_player.transmit_data(data, blocking);
-            }
-        }
+        rsp = serial_multi_player.send_data(data);
         // Update all entities in the game. In this case it is just the player, but in
         // larger games there could be more things to update.
         player.update(&button_controller);

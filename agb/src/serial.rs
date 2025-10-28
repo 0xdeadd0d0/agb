@@ -1,4 +1,5 @@
 use crate::interrupt::InterruptHandler;
+use heapless::Deque;
 use agb::interrupt::{add_interrupt_handler, Interrupt};
 use core::cell::RefCell;
 use core::marker::PhantomData;
@@ -21,8 +22,9 @@ const SERIAL_CNT_BIT_ERROR: u16 = 6;
 const SERIAL_CNT_BIT_START: u16 = 7;
 const SERIAL_CNT_BIT_MULTIPLAYER: u16 = 13;
 const SERIAL_CNT_BIT_IRQ: u16 = 14;
-const SIO_MULTI_PLAY_EMPTY_DATA: u16 = 0xFFFF;
-
+const SIO_MULTI_PLAY_OFFLINE_DATA: u16 = 0xFFFF;
+const SIO_MULTI_PLAY_EMPTY_DATA: u16 = 0x0;
+const SERIAL_MAX_PLAYERS: usize = 4;
 #[repr(u16)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum SerialBaudRate {
@@ -42,10 +44,7 @@ impl SerialBaudRate {
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
 struct SerialMultiPlayerReg {
-    sio_multi_data_0: u16,
-    sio_multi_data_1: u16,
-    sio_multi_data_2: u16,
-    sio_multi_data_3: u16,
+    sio_multi_data_i: [u16; SERIAL_MAX_PLAYERS],
     sio_cnt: u16,
     sio_multi_data_send: u16,
 }
@@ -99,16 +98,18 @@ union SerialReg {
 #[derive(Debug, Clone, Copy)]
 pub struct SerialResponse {
     pub sio_data: [u16; 4],
-    pub sio_player_id: u32,
+    pub sio_player_id: usize,
 }
 
 struct Serial {
     serial_reg: &'static mut SerialReg,
-    to_send: u16,
-    serial_response: SerialResponse,
+    fifo_send: Deque::<u16, 8>,
+    fifo_received: [Deque::<u16, 8>; 4],
+    player_id: usize,
+    players_online: usize,
 }
 
-const SIO_INVALID_PLAYER_ID: u32 = 0xDEADBEEF;
+const SIO_INVALID_PLAYER_ID: usize = 0xDEADBEEF;
 
 impl SerialGpio {
     fn set_gpio_mode(&mut self) {
@@ -134,7 +135,7 @@ impl SerialMultiPlayerReg {
 
     pub fn transmit_data(&mut self, data: u16, blocking: bool) -> SerialResponse {
         let mut response = SerialResponse {
-            sio_data: [SIO_MULTI_PLAY_EMPTY_DATA; 4],
+            sio_data: [SIO_MULTI_PLAY_OFFLINE_DATA; 4],
             sio_player_id: SIO_INVALID_PLAYER_ID,
         };
         self.set_data(data);
@@ -148,6 +149,8 @@ impl SerialMultiPlayerReg {
             self.start_transmission();
         }
         if blocking {
+            while !self.is_sending() {}
+            while self.is_sending() {}
             if self.is_ready() && !self.is_error() {
                 self.get_data(&mut response);
             }
@@ -158,13 +161,12 @@ impl SerialMultiPlayerReg {
 
     pub fn handle_serial_interrupt(&mut self) -> SerialResponse {
         let mut response = SerialResponse {
-            sio_data: [SIO_MULTI_PLAY_EMPTY_DATA; 4],
+            sio_data: [SIO_MULTI_PLAY_OFFLINE_DATA; 4],
             sio_player_id: SIO_INVALID_PLAYER_ID,
         };
         if self.is_ready() && !self.is_error() {
             self.get_data(&mut response);
         }
-        self.set_data(SIO_MULTI_PLAY_EMPTY_DATA);
         response
     }
 
@@ -214,15 +216,18 @@ impl SerialMultiPlayerReg {
         unsafe { (*addr_of!(self.sio_cnt) & (1 & SERIAL_CNT_BIT_ERROR)) != 0 }
     }
 
+    fn get_player_id(&self) -> usize {
+        unsafe { (*addr_of!(self.sio_cnt)
+            & SERIAL_CNT_BITS_PLAYER_ID_MASK) as usize
+            >> SERIAL_CNT_BITS_PLAYER_ID as usize }
+    }
+
     fn get_data<'a>(&self, rsp: &'a mut SerialResponse) -> &'a SerialResponse {
         unsafe {
-            rsp.sio_data[0] = *addr_of!(self.sio_multi_data_0);
-            rsp.sio_data[1] = *addr_of!(self.sio_multi_data_1);
-            rsp.sio_data[2] = *addr_of!(self.sio_multi_data_2);
-            rsp.sio_data[3] = *addr_of!(self.sio_multi_data_3);
-            rsp.sio_player_id = (*addr_of!(self.sio_cnt) as u32
-                & SERIAL_CNT_BITS_PLAYER_ID_MASK as u32)
-                >> SERIAL_CNT_BITS_PLAYER_ID as u32;
+            for i in 0..SERIAL_MAX_PLAYERS {
+                rsp.sio_data[i] = *addr_of!(self.sio_multi_data_i[i]);
+            }
+            rsp.sio_player_id = self.get_player_id();
         }
         rsp
     }
@@ -239,10 +244,10 @@ impl core::fmt::Display for SerialMultiPlayerReg {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         unsafe {
             let rcnt_str = SERIAL_RCNT.read_volatile();
-            let sio_multi_data_0_str = *addr_of!(self.sio_multi_data_0);
-            let sio_multi_data_1_str = *addr_of!(self.sio_multi_data_1);
-            let sio_multi_data_2_str = *addr_of!(self.sio_multi_data_2);
-            let sio_multi_data_3_str = *addr_of!(self.sio_multi_data_3);
+            let sio_multi_data_0_str = *addr_of!(self.sio_multi_data_i[0]);
+            let sio_multi_data_1_str = *addr_of!(self.sio_multi_data_i[1]);
+            let sio_multi_data_2_str = *addr_of!(self.sio_multi_data_i[2]);
+            let sio_multi_data_3_str = *addr_of!(self.sio_multi_data_i[3]);
             let sio_cnt_str = *addr_of!(self.sio_cnt);
             let sio_multi_data_send_str = *addr_of!(self.sio_multi_data_send);
             write!(
@@ -266,17 +271,46 @@ impl Serial {
     fn new() -> Serial {
         Serial {
             serial_reg: unsafe { &mut *(SERIAL_BASE_ADDR as *mut SerialReg) },
-            to_send: SIO_MULTI_PLAY_EMPTY_DATA,
-            serial_response: SerialResponse {
-                sio_data: [SIO_MULTI_PLAY_EMPTY_DATA; 4],
-                sio_player_id: SIO_INVALID_PLAYER_ID,
-            },
+            fifo_send: Deque::<u16, 8>::new(),
+            fifo_received: [Deque::<u16, 8>::new(),
+                Deque::<u16, 8>::new(),
+                Deque::<u16, 8>::new(),
+                Deque::<u16, 8>::new()],
+            player_id: SIO_INVALID_PLAYER_ID,
+            players_online: 0
+        }
+    }
+
+    pub fn handle_hblank_multiplay_irq(&mut self) {
+        unsafe {
+            if !self.serial_reg.multiplay_mode_reg.is_slave() {
+                self.serial_reg.multiplay_mode_reg.transmit_data(self.fifo_send.pop_front().unwrap_or(SIO_MULTI_PLAY_EMPTY_DATA), false);
+            }
         }
     }
 
     pub fn handle_serial_multiplay_irq(&mut self) {
+        let serial_response;
         unsafe {
-            self.serial_response = self.serial_reg.multiplay_mode_reg.handle_serial_interrupt();
+            serial_response = self.serial_reg.multiplay_mode_reg.handle_serial_interrupt();
+            if self.serial_reg.multiplay_mode_reg.is_slave() {
+                self.serial_reg.multiplay_mode_reg.transmit_data(self.fifo_send.pop_front().unwrap_or(SIO_MULTI_PLAY_EMPTY_DATA), false);
+            }
+         }
+        self.players_online = 0;
+        self.player_id = serial_response.sio_player_id;
+        for i in 0..SERIAL_MAX_PLAYERS {
+            let data = serial_response.sio_data[i];
+            if data == SIO_MULTI_PLAY_OFFLINE_DATA{
+                break;
+            }
+            else if data == SIO_MULTI_PLAY_EMPTY_DATA {
+                self.players_online += 1;
+            }
+            else {
+                let _ = self.fifo_received[i].push_back(data);
+                self.players_online += 1;
+            }
         }
     }
 }
@@ -285,10 +319,14 @@ static SERIAL_LINK: Mutex<RefCell<Option<Serial>>> = Mutex::new(RefCell::new(Non
 
 pub struct SerialMultiPlayer<'gba> {
     _interrupt_handler: InterruptHandler,
+    _interrupt_handler_hblank: InterruptHandler,
     baudrate: SerialBaudRate,
-    response: SerialResponse,
+    fifo_send: Deque::<u16, 8>,
+    fifo_received: [Deque::<u16, 8>; 4],
+    players_online: usize,
     is_master: bool,
     is_enabled: bool,
+    player_id: usize,
     phantom: PhantomData<&'gba ()>,
 }
 
@@ -300,19 +338,28 @@ impl<'gba> SerialMultiPlayer<'gba> {
                 add_interrupt_handler(Interrupt::Serial, move |cs| {
                     if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
                         serial.handle_serial_multiplay_irq();
-                        agb::println!("{}", serial.serial_reg.multiplay_mode_reg);
                     }
-                    agb::println!("Woah there! There's been a serial irq!\n");
+                    //agb::println!("Woah there! There's been a serial irq!\n");
                 })
             },
+            _interrupt_handler_hblank: unsafe {
+                add_interrupt_handler(Interrupt::HBlank, move |cs| {
+                    if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
+                        serial.handle_hblank_multiplay_irq();
+                    }
+                })
+            },
+            fifo_send: Deque::<u16, 8>::new(),
+            fifo_received: [Deque::<u16, 8>::new(),
+                Deque::<u16, 8>::new(),
+                Deque::<u16, 8>::new(),
+                Deque::<u16, 8>::new()],
             baudrate: baud_rate,
             is_master: false,
             phantom: PhantomData,
             is_enabled: false,
-            response: SerialResponse {
-                sio_data: [SIO_MULTI_PLAY_EMPTY_DATA; 4],
-                sio_player_id: SIO_INVALID_PLAYER_ID,
-            },
+            players_online: 0,
+            player_id: SIO_INVALID_PLAYER_ID
         }
     }
 
@@ -324,10 +371,12 @@ impl<'gba> SerialMultiPlayer<'gba> {
                         .serial_reg
                         .multiplay_mode_reg
                         .set_multi_player_mode(self.baudrate);
+                    serial.serial_reg.multiplay_mode_reg.enable_interrupt();
                     self.is_master = !serial.serial_reg.multiplay_mode_reg.is_slave();
                 }
             }
         });
+        self.player_id = if self.is_master {0} else {SIO_INVALID_PLAYER_ID};
         self.is_enabled = true;
     }
 
@@ -335,6 +384,7 @@ impl<'gba> SerialMultiPlayer<'gba> {
         critical_section::with(|cs| {
             if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
                 unsafe {
+                    serial.serial_reg.multiplay_mode_reg.disable_interrupt();
                     serial.serial_reg.gpio_mode_reg.set_gpio_mode();
                 }
             }
@@ -347,37 +397,73 @@ impl<'gba> SerialMultiPlayer<'gba> {
     }
 
     pub fn sync(&mut self) {
-        critical_section::with(|cs| {
-            if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
-                self.response = unsafe { serial.serial_response };
-            }
-        });
+        if self.is_enabled
+        {
+            critical_section::with(|cs| {
+                if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
+                    self.players_online = serial.players_online;
+                    self.player_id = serial.player_id;
+                    for i in 0..SERIAL_MAX_PLAYERS {
+                        self.fifo_received[i].clear();
+                    }
+                    for i in 0..SERIAL_MAX_PLAYERS {
+                        while !serial.fifo_received[i].is_empty() {
+                            let data = serial.fifo_received[i].pop_front();
+                            let _ = self.fifo_received[i].push_back(data.unwrap());
+                        }
+                    }
+                    while !self.fifo_send.is_empty() {
+                        let _ = serial.fifo_send.push_back(self.fifo_send.pop_front().unwrap());
+                    }
+                }
+            });
+        }
     }
 
     pub fn transmit_data(&mut self, data: u16, blocking: bool) -> SerialResponse {
-        critical_section::with(|cs| {
-            if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
-                self.response = unsafe {
-                    serial
-                        .serial_reg
-                        .multiplay_mode_reg
-                        .transmit_data(data, blocking)
+        let mut response = SerialResponse {
+            sio_data: [SIO_MULTI_PLAY_OFFLINE_DATA; 4],
+            sio_player_id: SIO_INVALID_PLAYER_ID,
+        };
+        if self.is_enabled {
+            critical_section::with(|cs| {
+                if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
+                    response = unsafe {
+                        serial
+                            .serial_reg
+                            .multiplay_mode_reg
+                            .transmit_data(data, blocking)
+                    };
                 }
-            }
-        });
-        self.response
+            });
+        }
+        response
     }
 
-    pub fn is_online(&self, player_id: u32) -> bool {
-        self.response.sio_data[player_id as usize] != SIO_MULTI_PLAY_EMPTY_DATA
+    pub fn is_online(&self, player_id: usize) -> bool {
+        if self.is_enabled
+        {
+            self.players_online <= player_id
+        }
+        else {
+            false
+        }
     }
 
-    pub fn get_response(&mut self) -> SerialResponse {
-        self.response
+    pub fn get_nb_players_online(&self) -> usize {
+        self.players_online
     }
 
-    pub fn get_player_id(&self) -> u32 {
-        self.response.sio_player_id
+    pub fn send_data(&mut self, data: u16) {
+        self.fifo_send.push_back(data);
+    }
+
+    pub fn get_player_rsp(&mut self, player_id: usize) -> Option<u16> {
+        self.fifo_received[player_id].pop_front()
+    }
+
+    pub fn get_player_id(&self) -> usize {
+        self.player_id
     }
 }
 
