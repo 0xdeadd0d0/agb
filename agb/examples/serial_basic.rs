@@ -14,7 +14,7 @@ use agb::{
     input::Button,
     input::ButtonController,
     serial::SerialBaudRate,
-    serial::SerialResponse,
+    serial::SerialMultiPlayer,
 };
 
 include_aseprite!(mod sprites, "examples/gfx/crab.aseprite");
@@ -40,6 +40,69 @@ impl Player {
         self.location += button_controller.vector::<Num<i32, 4>>() * num!(0.5);
     }
 
+    pub fn serial_send(&self, serial: &mut SerialMultiPlayer) {
+        let x_raw = Num::to_raw(self.location.x);
+        let y_raw = Num::to_raw(self.location.y);
+        serial.send_data(0xd0d0);
+        let data = (x_raw as u32 & 0xFFFF) as u16;
+        serial.send_data(if data == 0 { 0xdead } else { data });
+        serial.send_data(0xdada);
+        let data = (y_raw as u32 & 0xFFFF) as u16;
+        serial.send_data(if data == 0 { 0xdead } else { data });
+    }
+
+    pub fn serial_rcv(&mut self, serial: &mut SerialMultiPlayer, player_id: usize) {
+        let mut x_raw = Num::to_raw(self.location.x);
+        let mut y_raw = Num::to_raw(self.location.y);
+        let data1 = serial.get_player_rsp(player_id).unwrap_or(0x0);
+        let data2 = serial.get_player_rsp(player_id).unwrap_or(0x0);
+        let data3 = serial.get_player_rsp(player_id).unwrap_or(0x0);
+        let data4 = serial.get_player_rsp(player_id).unwrap_or(0x0);
+
+        if (data1 == 0xd0d0)
+            && (data2 != 0xd0d0)
+            && (data2 != 0xdada)
+            && (data2 != 0xdead)
+            && (data2 != 0)
+        {
+            x_raw = ((x_raw as u32 & 0xFFFF0000 as u32) | (data2 as u32)) as i32;
+        } else if (data3 == 0xd0d0)
+            && (data4 != 0xd0d0)
+            && (data4 != 0xdada)
+            && (data4 != 0xdead)
+            && (data4 != 0)
+        {
+            x_raw = ((x_raw as u32 & 0xFFFF0000 as u32) | (data4 as u32)) as i32;
+        }
+        if (data3 == 0xdada)
+            && (data4 != 0xd0d0)
+            && (data4 != 0xdada)
+            && (data4 != 0xdead)
+            && (data4 != 0)
+        {
+            y_raw = ((y_raw as u32 & 0xFFFF0000 as u32) | (data4 as u32)) as i32;
+        } else if (data1 == 0xdada)
+            && (data2 != 0xd0d0)
+            && (data2 != 0xdada)
+            && (data2 != 0xdead)
+            && (data2 != 0)
+        {
+            y_raw = ((y_raw as u32 & 0xFFFF0000 as u32) | (data2 as u32)) as i32;
+        }
+        self.location.x = Num::from_raw(x_raw);
+        self.location.y = Num::from_raw(y_raw);
+        agb::println!(
+            "player{} pos_raw{:X} {:X} sent: {:X} {:X} {:X} {:X} \n",
+            player_id,
+            x_raw,
+            y_raw,
+            data1,
+            data2,
+            data3,
+            data4
+        );
+    }
+
     pub fn show(&self, frame: &mut GraphicsFrame) {
         Object::new(self.sprite.clone())
             .set_pos(self.location.floor())
@@ -55,12 +118,14 @@ fn main(mut gba: agb::Gba) -> ! {
     // Get access to the graphics struct which is used to manage the frame lifecycle
     let mut gfx = gba.graphics.get();
 
-    let mut player = Player::new(vec2(num!(100.), num!(100.)));
+    let mut players = [
+        Player::new(vec2(num!(25.), num!(25.))),
+        Player::new(vec2(num!(50.), num!(50.))),
+        Player::new(vec2(num!(75.), num!(75.))),
+        Player::new(vec2(num!(100.), num!(100.))),
+    ];
     let mut button_controller = ButtonController::new();
     let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate0);
-    let mut rsp;
-    let mut data = 0xDEAD;
-    let mut blocking = true;
 
     let mut bg_tiles = RegularBackground::new(
         Priority::P0,
@@ -72,36 +137,38 @@ fn main(mut gba: agb::Gba) -> ! {
     loop {
         button_controller.update();
         serial_multi_player.sync();
+        let player_id = serial_multi_player.get_player_id();
+        let players_online = serial_multi_player.get_nb_players_online();
 
         if serial_multi_player.is_active() {
-            let player_id = serial_multi_player.get_player_id();
-            for i in 0..serial_multi_player.get_nb_players_online() {
+            for i in 0..players_online {
                 if i != player_id {
-                    let rsp = serial_multi_player.get_player_rsp(i).unwrap_or(0x0);
-                    if rsp != 0 {
-                        agb::println!("\n======\nyou are player{}\nplayer{} sent: {}\n======\n", player_id, i, rsp);
-                    }
+                    players[i].serial_rcv(&mut serial_multi_player, i);
                 }
+            }
+            if player_id < 4 {
+                players[player_id].serial_send(&mut serial_multi_player);
+                // Update all entities in the game. In this case it is just the player, but in
+                // larger games there could be more things to update.
+                players[player_id].update(&button_controller);
             }
         }
         if button_controller.is_pressed(Button::A) {
             serial_multi_player.activate();
         } else if button_controller.is_pressed(Button::B) {
             serial_multi_player.deactivate();
-        } else if button_controller.is_pressed(Button::START) {
-            data = 0xD0D0;
         }
-        rsp = serial_multi_player.send_data(data);
-        // Update all entities in the game. In this case it is just the player, but in
-        // larger games there could be more things to update.
-        player.update(&button_controller);
 
         // Create the GraphicsFrame
         let mut frame = gfx.frame();
 
-        // Call `.show()` on everything we want to show in this frame. If you don't call `.show()`
-        // on something, it won't be visible for this frame.
-        player.show(&mut frame);
+        if serial_multi_player.is_active() {
+            for i in 0..players_online {
+                // Call `.show()` on everything we want to show in this frame. If you don't call `.show()`
+                // on something, it won't be visible for this frame.
+                players[i].show(&mut frame);
+            }
+        }
         bg_tiles.show(&mut frame);
 
         // `.commit()` on frame will ensure that everything is drawn to the screen, and also wait
