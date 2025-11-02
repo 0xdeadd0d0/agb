@@ -481,6 +481,7 @@ pub struct Gba {
     pub save: save::SaveManager,
     /// Manages access to the Game Boy Advance's 4 timers.
     pub timers: timer::TimerController,
+    /// Manages access to the Game Boy Advance's 4 Serial link.
     pub serial: serial::SerialController,
 }
 

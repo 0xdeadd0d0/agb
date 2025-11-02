@@ -71,7 +71,6 @@ unsafe extern "C" {
 /// ```rust
 /// # #![no_std]
 /// # #![no_main]
-/// # use agb::sound::mixer::*;
 /// # use agb::*;
 /// # #[agb::doctest]
 /// # fn test(mut gba: Gba) {

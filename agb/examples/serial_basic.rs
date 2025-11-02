@@ -104,7 +104,7 @@ fn main(mut gba: agb::Gba) -> ! {
         Player::new(vec2(num!(100.), num!(100.))),
     ];
     let mut button_controller = ButtonController::new();
-    let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate2);
+    let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate1);
 
     let mut bg_tiles = RegularBackground::new(
         Priority::P0,
