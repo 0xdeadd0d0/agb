@@ -54,53 +54,32 @@ impl Player {
     pub fn serial_rcv(&mut self, serial: &mut SerialMultiPlayer, player_id: usize) {
         let mut x_raw = Num::to_raw(self.location.x);
         let mut y_raw = Num::to_raw(self.location.y);
-        let data1 = serial.get_player_rsp(player_id).unwrap_or(0x0);
-        let data2 = serial.get_player_rsp(player_id).unwrap_or(0x0);
-        let data3 = serial.get_player_rsp(player_id).unwrap_or(0x0);
-        let data4 = serial.get_player_rsp(player_id).unwrap_or(0x0);
+        let mut data0 = serial.get_player_rsp(player_id).unwrap_or(0x0);
+        let mut data1 = serial.get_player_rsp(player_id).unwrap_or(0x0);
 
-        if (data1 == 0xd0d0)
-            && (data2 != 0xd0d0)
-            && (data2 != 0xdada)
-            && (data2 != 0xdead)
-            && (data2 != 0)
-        {
-            x_raw = ((x_raw as u32 & 0xFFFF0000 as u32) | (data2 as u32)) as i32;
-        } else if (data3 == 0xd0d0)
-            && (data4 != 0xd0d0)
-            && (data4 != 0xdada)
-            && (data4 != 0xdead)
-            && (data4 != 0)
-        {
-            x_raw = ((x_raw as u32 & 0xFFFF0000 as u32) | (data4 as u32)) as i32;
-        }
-        if (data3 == 0xdada)
-            && (data4 != 0xd0d0)
-            && (data4 != 0xdada)
-            && (data4 != 0xdead)
-            && (data4 != 0)
-        {
-            y_raw = ((y_raw as u32 & 0xFFFF0000 as u32) | (data4 as u32)) as i32;
-        } else if (data1 == 0xdada)
-            && (data2 != 0xd0d0)
-            && (data2 != 0xdada)
-            && (data2 != 0xdead)
-            && (data2 != 0)
-        {
-            y_raw = ((y_raw as u32 & 0xFFFF0000 as u32) | (data2 as u32)) as i32;
+        while data0 != 0 {
+            if (data0 == 0xd0d0)
+                && (data1 != 0xd0d0)
+                && (data1 != 0xdada)
+                && (data1 != 0xdead)
+                && (data1 != 0)
+            {
+                x_raw = ((x_raw as u32 & 0xFFFF0000 as u32) | (data1 as u32)) as i32;
+            } else if (data0 == 0xdada)
+                && (data1 != 0xd0d0)
+                && (data1 != 0xdada)
+                && (data1 != 0xdead)
+                && (data1 != 0)
+            {
+                y_raw = ((y_raw as u32 & 0xFFFF0000 as u32) | (data1 as u32)) as i32;
+            } else {
+                agb::println!("Fail to update player {player_id}\n");
+            }
+            data0 = serial.get_player_rsp(player_id).unwrap_or(0x0);
+            data1 = serial.get_player_rsp(player_id).unwrap_or(0x0);
         }
         self.location.x = Num::from_raw(x_raw);
         self.location.y = Num::from_raw(y_raw);
-        agb::println!(
-            "player{} pos_raw{:X} {:X} sent: {:X} {:X} {:X} {:X} \n",
-            player_id,
-            x_raw,
-            y_raw,
-            data1,
-            data2,
-            data3,
-            data4
-        );
     }
 
     pub fn show(&self, frame: &mut GraphicsFrame) {
@@ -125,7 +104,7 @@ fn main(mut gba: agb::Gba) -> ! {
         Player::new(vec2(num!(100.), num!(100.))),
     ];
     let mut button_controller = ButtonController::new();
-    let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate0);
+    let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate2);
 
     let mut bg_tiles = RegularBackground::new(
         Priority::P0,

@@ -124,6 +124,7 @@ impl SerialGpio {
 }
 
 impl SerialMultiPlayerReg {
+    /// enable the serial link in multiplay mode.
     fn set_multi_player_mode(&mut self, baud_rate: SerialBaudRate) {
         unsafe {
             SERIAL_RCNT
@@ -134,45 +135,8 @@ impl SerialMultiPlayerReg {
         }
     }
 
-    pub fn transmit_data(&mut self, data: u16, blocking: bool) -> SerialResponse {
-        let mut response = SerialResponse {
-            sio_data: [SIO_MULTI_PLAY_OFFLINE_DATA; 4],
-            sio_player_id: SIO_INVALID_PLAYER_ID,
-        };
-        self.set_data(data);
-        if blocking {
-            // test to trig the Irq handler
-            self.disable_interrupt();
-        } else {
-            self.enable_interrupt();
-        }
-        if !self.is_slave() {
-            self.start_transmission();
-        }
-        if blocking {
-            while !self.is_sending() {}
-            while self.is_sending() {}
-            if self.is_ready() && !self.is_error() {
-                self.get_data(&mut response);
-            }
-            self.set_data(SIO_MULTI_PLAY_EMPTY_DATA);
-        }
-        response
-    }
-
-    pub fn handle_serial_interrupt(&mut self) -> SerialResponse {
-        let mut response = SerialResponse {
-            sio_data: [SIO_MULTI_PLAY_OFFLINE_DATA; 4],
-            sio_player_id: SIO_INVALID_PLAYER_ID,
-        };
-        if self.is_ready() && !self.is_error() {
-            self.get_data(&mut response);
-            self.set_data(SIO_MULTI_PLAY_EMPTY_DATA);
-        }
-        response
-    }
-
     #[inline(always)]
+    /// set multiplay data to send for the next start
     fn set_data(&mut self, data: u16) {
         unsafe {
             *addr_of_mut!(self.sio_multi_data_send) = data;
@@ -180,6 +144,7 @@ impl SerialMultiPlayerReg {
     }
 
     #[inline(always)]
+    /// enable serial irq
     fn enable_interrupt(&mut self) {
         unsafe {
             *addr_of_mut!(self.sio_cnt) |= 1 << SERIAL_CNT_BIT_IRQ;
@@ -187,6 +152,7 @@ impl SerialMultiPlayerReg {
     }
 
     #[inline(always)]
+    /// disable serial irq
     fn disable_interrupt(&mut self) {
         unsafe {
             *addr_of_mut!(self.sio_cnt) &= !(1 << SERIAL_CNT_BIT_IRQ);
@@ -194,25 +160,36 @@ impl SerialMultiPlayerReg {
     }
 
     #[inline(always)]
+    #[must_use]
+    /// Returns `true` if a transmission is on going, and `false` if not.
     fn is_sending(&self) -> bool {
         unsafe { (addr_of!(self.sio_cnt).read_volatile() & (1 << SERIAL_CNT_BIT_START)) != 0 }
     }
 
     #[inline(always)]
+    #[must_use]
+    /// Returns `true` if all slaves are connected in multiplay mode, and `false` if not.
     fn is_ready(&self) -> bool {
         unsafe { (*addr_of!(self.sio_cnt) & (1 << SERIAL_CNT_BIT_CHILD_READY)) != 0 }
     }
 
     #[inline(always)]
+    #[must_use]
+    /// Returns `true` if connected as slave, and `false` if connected as master.
     fn is_slave(&self) -> bool {
         unsafe { (*addr_of!(self.sio_cnt) & (1 << SERIAL_CNT_BIT_SLAVE)) != 0 }
     }
 
     #[inline(always)]
+    #[must_use]
+    /// Returns `true` if an error occurred, and `false` if not.
     fn is_error(&self) -> bool {
         unsafe { (*addr_of!(self.sio_cnt) & (1 & SERIAL_CNT_BIT_ERROR)) != 0 }
     }
 
+    #[inline(always)]
+    #[must_use]
+    /// Returns player id between 0-3.
     fn get_player_id(&self) -> usize {
         unsafe {
             (*addr_of!(self.sio_cnt) & SERIAL_CNT_BITS_PLAYER_ID_MASK) as usize
@@ -220,6 +197,8 @@ impl SerialMultiPlayerReg {
         }
     }
 
+    #[must_use]
+    /// Returns `SerialResponse` of the last transfer.
     fn get_data<'a>(&self, rsp: &'a mut SerialResponse) -> &'a SerialResponse {
         unsafe {
             for i in 0..SERIAL_MAX_PLAYERS {
@@ -231,6 +210,7 @@ impl SerialMultiPlayerReg {
     }
 
     #[inline(always)]
+    /// Start transmission. Must be done by the master.
     fn start_transmission(&mut self) {
         unsafe {
             *addr_of_mut!(self.sio_cnt) |= 1 << SERIAL_CNT_BIT_START;
@@ -294,15 +274,26 @@ impl Serial {
     }
 
     pub fn handle_serial_multiplay_irq(&mut self) {
-        let serial_response;
+        let mut response = SerialResponse {
+            sio_data: [SIO_MULTI_PLAY_OFFLINE_DATA; 4],
+            sio_player_id: SIO_INVALID_PLAYER_ID,
+        };
         unsafe {
-            serial_response = self.serial_reg.multiplay_mode_reg.handle_serial_interrupt();
+            if self.serial_reg.multiplay_mode_reg.is_ready()
+                && !self.serial_reg.multiplay_mode_reg.is_error()
+                && !self.serial_reg.multiplay_mode_reg.is_sending()
+            {
+                self.serial_reg.multiplay_mode_reg.get_data(&mut response);
+                self.serial_reg
+                    .multiplay_mode_reg
+                    .set_data(SIO_MULTI_PLAY_EMPTY_DATA);
+            }
         }
         self.players_online = 0;
-        self.player_id = serial_response.sio_player_id;
+        self.player_id = response.sio_player_id;
         if self.player_id != SIO_INVALID_PLAYER_ID {
             for i in 0..SERIAL_MAX_PLAYERS {
-                let data = serial_response.sio_data[i];
+                let data = response.sio_data[i];
                 if data == SIO_MULTI_PLAY_OFFLINE_DATA {
                     break;
                 } else if data == SIO_MULTI_PLAY_EMPTY_DATA {
@@ -312,11 +303,11 @@ impl Serial {
                     self.players_online += 1;
                 }
             }
+            let data = self
+                .fifo_send
+                .pop_front()
+                .unwrap_or(SIO_MULTI_PLAY_EMPTY_DATA);
             unsafe {
-                let data = self
-                    .fifo_send
-                    .pop_front()
-                    .unwrap_or(SIO_MULTI_PLAY_EMPTY_DATA);
                 self.serial_reg.multiplay_mode_reg.set_data(data);
             }
         } else {
@@ -347,14 +338,15 @@ impl<'gba> SerialMultiPlayer<'gba> {
         let mut interrupt_timer = unsafe { Timer::new(3) };
         interrupt_timer
             .set_cascade(false)
-            .set_divider(Divider::Divider64)
+            .set_divider(Divider::Divider1)
             .set_interrupt(true)
-            .set_overflow_amount(0x3ff as u16);
+            .set_overflow_amount(0x7FC0 as u16);
         let interrupt_handler = unsafe {
             add_interrupt_handler(interrupt_timer.interrupt(), move |cs| {
                 if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
                     serial.handle_hblank_multiplay_irq();
                 }
+                agb::println!("\n===timer3 irq occurred===\n");
             })
         };
         SerialMultiPlayer {
@@ -445,26 +437,6 @@ impl<'gba> SerialMultiPlayer<'gba> {
                 }
             });
         }
-    }
-
-    pub fn transmit_data(&mut self, data: u16, blocking: bool) -> SerialResponse {
-        let mut response = SerialResponse {
-            sio_data: [SIO_MULTI_PLAY_OFFLINE_DATA; 4],
-            sio_player_id: SIO_INVALID_PLAYER_ID,
-        };
-        if self.is_enabled {
-            critical_section::with(|cs| {
-                if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
-                    response = unsafe {
-                        serial
-                            .serial_reg
-                            .multiplay_mode_reg
-                            .transmit_data(data, blocking)
-                    };
-                }
-            });
-        }
-        response
     }
 
     pub fn is_online(&self, player_id: usize) -> bool {
