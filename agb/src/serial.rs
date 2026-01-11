@@ -330,9 +330,6 @@ impl Serial {
                 && !self.serial_reg.multiplay_mode_reg.is_sending()
             {
                 self.serial_reg.multiplay_mode_reg.get_data(&mut response);
-                self.serial_reg
-                    .multiplay_mode_reg
-                    .set_data(SIO_MULTI_PLAY_EMPTY_DATA);
             }
         }
         self.players_online = 0;
@@ -349,15 +346,13 @@ impl Serial {
                     self.players_online += 1;
                 }
             }
-            let data = self
-                .fifo_send
-                .pop_front()
-                .unwrap_or(SIO_MULTI_PLAY_EMPTY_DATA);
-            unsafe {
-                self.serial_reg.multiplay_mode_reg.set_data(data);
-            }
-        } else {
-            agb::println!("\n===ERROR in handle_serial_multiplay_irq===\n");
+        }
+        let data = self
+            .fifo_send
+            .pop_front()
+            .unwrap_or(SIO_MULTI_PLAY_EMPTY_DATA);
+        unsafe {
+            self.serial_reg.multiplay_mode_reg.set_data(data);
         }
     }
 }
@@ -403,15 +398,14 @@ impl<'gba> SerialMultiPlayer<'gba> {
         let mut interrupt_timer = unsafe { Timer::new(2) };
         interrupt_timer
             .set_cascade(false)
-            .set_divider(Divider::Divider64)
+            .set_divider(Divider::Divider1024)
             .set_interrupt(true)
-            .set_overflow_amount(0x1FF as u16);
+            .set_overflow_amount(50 as u16);
         let interrupt_handler = unsafe {
             add_interrupt_handler(interrupt_timer.interrupt(), move |cs| {
                 if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
                     serial.handle_hblank_multiplay_irq();
                 }
-                agb::println!("\n===timer3 irq occurred===\n");
             })
         };
         SerialMultiPlayer {
@@ -442,39 +436,43 @@ impl<'gba> SerialMultiPlayer<'gba> {
 
     /// Activate the multiplay mode.
     pub fn activate(&mut self) {
-        critical_section::with(|cs| {
-            if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
-                unsafe {
-                    serial
-                        .serial_reg
-                        .multiplay_mode_reg
-                        .set_multi_player_mode(self.baudrate);
-                    serial.serial_reg.multiplay_mode_reg.enable_interrupt();
-                    self.is_master = !serial.serial_reg.multiplay_mode_reg.is_slave();
-                    self.player_id = if self.is_master {
-                        0
-                    } else {
-                        SIO_INVALID_PLAYER_ID
-                    };
-                    self.is_enabled = true;
-                    self.interrupt_timer.set_enabled(self.is_master);
+        if !self.is_enabled {
+            critical_section::with(|cs| {
+                if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
+                    unsafe {
+                        serial
+                            .serial_reg
+                            .multiplay_mode_reg
+                            .set_multi_player_mode(self.baudrate);
+                        serial.serial_reg.multiplay_mode_reg.enable_interrupt();
+                        self.is_master = !serial.serial_reg.multiplay_mode_reg.is_slave();
+                        self.player_id = if self.is_master {
+                            0
+                        } else {
+                            SIO_INVALID_PLAYER_ID
+                        };
+                        self.is_enabled = true;
+                        self.interrupt_timer.set_enabled(self.is_master);
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     /// Deactivate the multiplay mode.
     pub fn deactivate(&mut self) {
-        critical_section::with(|cs| {
-            if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
-                unsafe {
-                    serial.serial_reg.multiplay_mode_reg.disable_interrupt();
-                    serial.serial_reg.gpio_mode_reg.set_gpio_mode();
+        if self.is_enabled {
+            critical_section::with(|cs| {
+                if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
+                    unsafe {
+                        serial.serial_reg.multiplay_mode_reg.disable_interrupt();
+                        serial.serial_reg.gpio_mode_reg.set_gpio_mode();
+                    }
+                    self.is_enabled = false;
+                    self.interrupt_timer.set_enabled(false);
                 }
-                self.is_enabled = false;
-                self.interrupt_timer.set_enabled(false);
-            }
-        });
+            });
+        }
     }
 
     /// Return `true` if the multiplay mode is activated, and `false` if not.
@@ -489,6 +487,7 @@ impl<'gba> SerialMultiPlayer<'gba> {
                 if let Some(ref mut serial) = *SERIAL_LINK.borrow_ref_mut(cs) {
                     self.players_online = serial.players_online;
                     self.player_id = serial.player_id;
+
                     for i in 0..SERIAL_MAX_PLAYERS {
                         while !serial.fifo_received[i].is_empty() {
                             let data = serial.fifo_received[i].pop_front();

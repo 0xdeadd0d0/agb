@@ -18,6 +18,7 @@ multiboot = []
 embassy = []
 
 [dependencies]
+bitflags = "2"
 agb_image_converter = { version = "0.22.6", path = "../agb-image-converter" }
 agb_sound_converter = { version = "0.22.6", path = "../agb-sound-converter" }
 agb_macros = { version = "0.22.6", path = "../agb-macros" }

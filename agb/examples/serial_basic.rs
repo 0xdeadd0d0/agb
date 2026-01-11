@@ -72,8 +72,6 @@ impl Player {
                 && (data1 != 0)
             {
                 y_raw = ((y_raw as u32 & 0xFFFF0000 as u32) | (data1 as u32)) as i32;
-            } else {
-                agb::println!("Fail to update player {player_id}\n");
             }
             data0 = serial.get_player_rsp(player_id).unwrap_or(0x0);
             data1 = serial.get_player_rsp(player_id).unwrap_or(0x0);
@@ -104,7 +102,7 @@ fn main(mut gba: agb::Gba) -> ! {
         Player::new(vec2(num!(100.), num!(100.))),
     ];
     let mut button_controller = ButtonController::new();
-    let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate1);
+    let mut serial_multi_player = gba.serial.serial_multi_player(SerialBaudRate::BaudRate3);
 
     let mut bg_tiles = RegularBackground::new(
         Priority::P0,
