@@ -25,6 +25,7 @@ agb_macros = { version = "0.22.6", path = "../agb-macros" }
 agb_fixnum = { version = "0.22.6", path = "../agb-fixnum", features = ["serde"] }
 agb_hashmap = { version = "0.22.6", path = "../agb-hashmap", features = ["allocator_api", "serde"] }
 agb_save = { version = "0.22.6", path = "../agb-save" }
+postcard = "1.0.0"
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 bilge = "0.3"
 qrcodegen-no-heap = { version = "1.8", optional = true }

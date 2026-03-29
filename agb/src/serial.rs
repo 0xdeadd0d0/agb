@@ -8,6 +8,10 @@ use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
 use critical_section::Mutex;
 use heapless::Deque;
+use postcard::{
+    serialize_with_flavor,
+    ser_flavors::Slice,
+};
 
 /// 4000134h - RCNT (R) - Mode Selection, in Normal/Multiplayer/UART modes (R/W)
 const SERIAL_RCNT: *mut u16 = (0x04000134) as *mut u16;
